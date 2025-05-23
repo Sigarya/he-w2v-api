@@ -53,7 +53,23 @@ def get_similarity(word1: str, word2: str):
         final_similarity = float(similarity_value)
         print(f"Similarity converted to Python float: {final_similarity}")
 
-        return {"word1": word1, "word2": word2, "similarity": final_similarity}
+        is_in_top_1000 = False
+        rank_in_top_1000 = None
+
+        if word2 in model.wv:
+            top_1000_words_tuples = model.wv.most_similar(word2, topn=1000)
+            top_1000_words = [w for w, s in top_1000_words_tuples]
+            if word1 in top_1000_words:
+                is_in_top_1000 = True
+                rank_in_top_1000 = top_1000_words.index(word1) + 1
+        
+        return {
+            "word1": word1, 
+            "word2": word2, 
+            "similarity": final_similarity,
+            "is_in_top_1000": is_in_top_1000,
+            "rank_in_top_1000": rank_in_top_1000
+        }
 
     except KeyError as e: # זה לרוב ייתפס על ידי הבדיקות למעלה
         print(f"KeyError in similarity for '{word1}' or '{word2}': {str(e)}")
