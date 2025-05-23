@@ -1,0 +1,30 @@
+services:
+  - type: web
+    name: hebrew-w2v-api
+    runtime: python
+    plan: free # שים לב: טעינת מודלים גדולים יכולה להיות איטית או להיכשל בגלל מגבלות זיכרון בתוכנית החינמית.
+    region: oregon # או האזור הקרוב אליך/למשתמשים שלך, אם רלוונטי. ברירת מחדל היא אורגון.
+    buildCommand: |
+      pip install -r requirements.txt
+      echo "Downloading model files (Full Word2Vec)..."
+      
+      # הורדת model.mdl
+      echo "Downloading model.mdl..."
+      wget -O model.mdl "https://drive.google.com/uc?export=download&id=1T9tSdIm-8AEz0c6mJuFfLyBL75_lnsTU"
+      
+      # הורדת model.mdl.wv.vectors.npy
+      echo "Downloading model.mdl.wv.vectors.npy..."
+      wget -O model.mdl.wv.vectors.npy "https://drive.google.com/uc?export=download&id=1z5n9L-2oS_YEh3qf-nkz3ugMM8oqpxGZ"
+      
+      # הורדת model.mdl.syn1neg.npy
+      echo "Downloading model.mdl.syn1neg.npy..."
+      wget -O model.mdl.syn1neg.npy "https://drive.google.com/uc?export=download&id=1uhu7bevYhCYZNLPdvupSuw_4X42_-smY"
+      
+      echo "Model files download complete."
+      echo "Listing files in current directory:"
+      ls -la # פקודה זו תציג את הקבצים בתיקייה, כדי שתוכל לראות בלוגים שהם הורדו
+    startCommand: uvicorn app:app --host 0.0.0.0 --port 10000
+    healthCheckPath: / # Render ישתמש בזה כדי לבדוק שהשירות חי. נוסיף נתיב בריאות בסיסי לאפליקציה.
+    envVars:
+      - key: PYTHON_VERSION
+        value: '3.11' # או גרסת פייתון אחרת שאתה משתמש בה, לדוגמה 3.9, 3.10

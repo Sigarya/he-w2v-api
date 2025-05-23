@@ -1,0 +1,4 @@
+uvicorn
+gensim==4.3.3
+numpy
+fastapi
