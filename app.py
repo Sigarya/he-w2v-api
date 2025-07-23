@@ -3,6 +3,7 @@ import json
 import traceback
 import threading
 import subprocess
+import re
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 import requests
@@ -38,54 +39,133 @@ def download_model_files():
         if not os.path.exists(filename):
             files_to_download.append((filename, file_id))
         else:
-            # Check if file is too small (likely an error page)
+            # Check if file is too small or contains HTML (corrupted download)
             try:
-                if os.path.getsize(filename) < 1000:
-                    print(f"{filename} exists but is too small, will re-download")
+                size = os.path.getsize(filename)
+                if size < 1000:
+                    print(f"{filename} exists but is too small ({size} bytes), will re-download")
                     files_to_download.append((filename, file_id))
+                else:
+                    # Check if file starts with HTML (corrupted download)
+                    with open(filename, 'rb') as f:
+                        first_bytes = f.read(100)
+                        if b'<html>' in first_bytes.lower() or b'<!doctype' in first_bytes.lower():
+                            print(f"{filename} contains HTML content, will re-download")
+                            files_to_download.append((filename, file_id))
             except:
                 files_to_download.append((filename, file_id))
     
     if not files_to_download:
-        print("All model files exist")
+        print("All model files exist and appear valid")
         return True
     
     print(f"Need to download {len(files_to_download)} model files...")
     
     for filename, file_id in files_to_download:
         print(f"Downloading {filename}...")
+        success = False
         
-        # Try gdown first
+        # Method 1: Try gdown with different options
         try:
+            # Remove existing file first
+            if os.path.exists(filename):
+                os.remove(filename)
+            
             result = subprocess.run([
                 "python", "-m", "gdown", 
-                f"https://drive.google.com/file/d/{file_id}/view?usp=sharing",
-                "-O", filename
+                "--id", file_id,
+                "-O", filename,
+                "--quiet"
             ], capture_output=True, text=True, timeout=300)
             
-            if os.path.exists(filename) and os.path.getsize(filename) > 1000:
-                print(f"Successfully downloaded {filename} with gdown")
-                continue
+            if os.path.exists(filename):
+                size = os.path.getsize(filename)
+                # Check if it's not HTML
+                with open(filename, 'rb') as f:
+                    first_bytes = f.read(100)
+                    if size > 1000 and b'<html>' not in first_bytes.lower():
+                        print(f"Successfully downloaded {filename} with gdown (method 1) - {size} bytes")
+                        success = True
+                    else:
+                        print(f"gdown method 1 returned HTML or small file for {filename}")
+                        os.remove(filename)
         except Exception as e:
-            print(f"gdown failed for {filename}: {e}")
+            print(f"gdown method 1 failed for {filename}: {e}")
         
-        # Try direct download
+        if success:
+            continue
+            
+        # Method 2: Try gdown with fuzzy matching
         try:
-            url = f"https://drive.google.com/uc?export=download&id={file_id}"
-            response = requests.get(url, stream=True, timeout=300)
-            if response.status_code == 200:
-                with open(filename, 'wb') as f:
-                    for chunk in response.iter_content(chunk_size=8192):
-                        f.write(chunk)
+            if os.path.exists(filename):
+                os.remove(filename)
                 
-                if os.path.getsize(filename) > 1000:
-                    print(f"Successfully downloaded {filename} with requests")
-                    continue
+            result = subprocess.run([
+                "python", "-m", "gdown", 
+                "--fuzzy",
+                f"https://drive.google.com/file/d/{file_id}/view?usp=sharing",
+                "-O", filename,
+                "--quiet"
+            ], capture_output=True, text=True, timeout=300)
+            
+            if os.path.exists(filename):
+                size = os.path.getsize(filename)
+                with open(filename, 'rb') as f:
+                    first_bytes = f.read(100)
+                    if size > 1000 and b'<html>' not in first_bytes.lower():
+                        print(f"Successfully downloaded {filename} with gdown (method 2) - {size} bytes")
+                        success = True
+                    else:
+                        print(f"gdown method 2 returned HTML or small file for {filename}")
+                        os.remove(filename)
+        except Exception as e:
+            print(f"gdown method 2 failed for {filename}: {e}")
+            
+        if success:
+            continue
+        
+        # Method 3: Try direct download with session to handle redirects
+        try:
+            if os.path.exists(filename):
+                os.remove(filename)
+                
+            session = requests.Session()
+            
+            # First request to get the redirect
+            url1 = f"https://drive.google.com/uc?export=download&id={file_id}"
+            response1 = session.get(url1, stream=True, timeout=30)
+            
+            # Look for the download warning bypass
+            if 'confirm=' in response1.text:
+                # Extract the confirm token
+                import re
+                token_match = re.search(r'confirm=([a-zA-Z0-9_-]+)', response1.text)
+                if token_match:
+                    token = token_match.group(1)
+                    url2 = f"https://drive.google.com/uc?export=download&confirm={token}&id={file_id}"
+                    response2 = session.get(url2, stream=True, timeout=300)
+                    
+                    if response2.status_code == 200:
+                        with open(filename, 'wb') as f:
+                            for chunk in response2.iter_content(chunk_size=8192):
+                                f.write(chunk)
+                        
+                        size = os.path.getsize(filename)
+                        with open(filename, 'rb') as f:
+                            first_bytes = f.read(100)
+                            if size > 1000 and b'<html>' not in first_bytes.lower():
+                                print(f"Successfully downloaded {filename} with direct method - {size} bytes")
+                                success = True
+                            else:
+                                print(f"Direct method returned HTML or small file for {filename}")
+                                os.remove(filename)
+            
         except Exception as e:
             print(f"Direct download failed for {filename}: {e}")
         
-        print(f"Failed to download {filename}")
-        return False
+        if not success:
+            print(f"All methods failed for {filename}")
+            return False
     
     return True
 
