@@ -24,16 +24,36 @@ model: Optional[Word2Vec] = None
 daily_words_cache: Dict[str, Dict] = {}  # Cache for loaded daily word data
 background_tasks: Dict[str, threading.Thread] = {}  # Track background calculations
 
-# Load the Word2Vec model
-model_path = os.getenv("MODEL_PATH", "model.mdl")
-print(f"Attempting to load model from: {model_path}")
-try:
-    model = Word2Vec.load(model_path)
-    print("Model loaded successfully!")
-except Exception as e:
-    print(f"Error loading model: {str(e)}")
-    traceback.print_exc()
-    model = None
+def load_model():
+    """Load the Word2Vec model with retry logic"""
+    global model
+    if model is not None:
+        return model
+    
+    model_path = os.getenv("MODEL_PATH", "model.mdl")
+    print(f"Attempting to load model from: {model_path}")
+    
+    # Check if model file exists
+    if not os.path.exists(model_path):
+        print(f"Model file not found at {model_path}")
+        print("Current directory contents:")
+        try:
+            print(os.listdir("."))
+        except Exception as e:
+            print(f"Could not list directory: {e}")
+        return None
+    
+    try:
+        model = Word2Vec.load(model_path)
+        print("Model loaded successfully!")
+        return model
+    except Exception as e:
+        print(f"Error loading model: {str(e)}")
+        traceback.print_exc()
+        return None
+
+# Try to load model at startup, but don't fail if it's not available yet
+model = load_model()
 
 def verify_admin_credentials(credentials: HTTPBasicCredentials = Depends(security)):
     """Verify admin credentials for protected endpoints"""
@@ -130,16 +150,18 @@ def calculate_daily_words_background(date_str: str, daily_word: str):
     print(f"Starting background calculation for {date_str} with word '{daily_word}'")
     
     try:
-        if model is None:
+        # Ensure model is loaded
+        current_model = model if model is not None else load_model()
+        if current_model is None:
             print("Model not loaded, cannot calculate similarity")
             return
             
-        if daily_word not in model.wv:
+        if daily_word not in current_model.wv:
             print(f"Daily word '{daily_word}' not in vocabulary")
             return
             
         # Calculate 1000 most similar words
-        similar_words = model.wv.most_similar(daily_word, topn=1000)
+        similar_words = current_model.wv.most_similar(daily_word, topn=1000)
         
         # Create the data structure
         daily_data = {
@@ -204,11 +226,23 @@ def get_word_rank(daily_data: Dict, word: str) -> int:
 
 @app.get("/")
 def health_check():
-    return {"status": "healthy", "message": "Enhanced Word2Vec API is running!"}
+    """Health check endpoint that also attempts to load model if needed"""
+    if model is None:
+        load_model()
+    
+    return {
+        "status": "healthy", 
+        "message": "Enhanced Word2Vec API is running!",
+        "model_loaded": model is not None
+    }
 
 @app.get("/similarity")
 def get_similarity(word1: str, word2: str):
     """Get similarity between two words with ranking for today's daily word"""
+    # Try to load model if it's not loaded
+    if model is None:
+        load_model()
+    
     if model is None:
         return JSONResponse(
             status_code=503,
@@ -260,6 +294,10 @@ def get_similarity(word1: str, word2: str):
 @app.get("/similarity/historical")
 def get_historical_similarity(date: str, word1: str, word2: str):
     """Get similarity for a specific historical date"""
+    # Try to load model if it's not loaded
+    if model is None:
+        load_model()
+    
     if model is None:
         return JSONResponse(
             status_code=503,
@@ -327,6 +365,10 @@ def get_historical_similarity(date: str, word1: str, word2: str):
 @app.post("/admin/set-daily-word")
 def set_daily_word(date: str, word: str, credentials: HTTPBasicCredentials = Depends(verify_admin_credentials)):
     """Set the daily word for a specific date (admin only)"""
+    # Try to load model if it's not loaded
+    if model is None:
+        load_model()
+    
     if model is None:
         return JSONResponse(
             status_code=503,
@@ -381,7 +423,22 @@ def set_daily_word(date: str, word: str, credentials: HTTPBasicCredentials = Dep
             content={"error": "Internal server error"}
         )
 
-@app.get("/admin/status")
+@app.get("/debug/files")
+def debug_files():
+    """Debug endpoint to check what files are available"""
+    try:
+        current_dir = os.getcwd()
+        files = os.listdir(".")
+        return {
+            "current_directory": current_dir,
+            "files": files,
+            "model_file_exists": os.path.exists("model.mdl"),
+            "model_loaded": model is not None
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.post("/admin/reload-model")
 def get_admin_status(credentials: HTTPBasicCredentials = Depends(verify_admin_credentials)):
     """Get status of daily words and background tasks (admin only)"""
     return {
