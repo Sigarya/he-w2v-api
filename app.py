@@ -19,7 +19,7 @@ security = HTTPBasic()
 # Configuration
 ADMIN_PASSWORD = "flotzimbatusik"
 GOOGLE_DRIVE_API_KEY = "AIzaSyD0qV86jw1KTYvVxeB-XHOLisaMyOAlmjI"
-GOOGLE_DRIVE_FOLDER_ID = None  # You'll need to create a folder and get its ID
+GOOGLE_DRIVE_FOLDER_ID = None  # Will be disabled due to permission issues - using local storage instead
 
 # Global variables
 model: Optional[Word2Vec] = None
@@ -206,6 +206,13 @@ def load_model():
 # Try to load model at startup, but don't fail if it's not available yet
 model = load_model()
 
+# Create data directory for local storage if it doesn't exist
+try:
+    if not os.path.exists('data'):
+        os.makedirs('data')
+except:
+    pass
+
 def verify_admin_credentials(credentials: HTTPBasicCredentials = Depends(security)):
     """Verify admin credentials for protected endpoints"""
     is_correct_username = secrets.compare_digest(credentials.username, "admin")
@@ -232,68 +239,30 @@ def date_to_filename(date_str: str) -> str:
     return dt.strftime("%Y-%m-%d.json")
 
 def upload_to_google_drive(filename: str, content: str) -> bool:
-    """Upload a file to Google Drive"""
+    """Save file locally (Google Drive disabled due to API permissions)"""
     try:
-        # Create file metadata
-        metadata = {
-            'name': filename,
-            'parents': [GOOGLE_DRIVE_FOLDER_ID] if GOOGLE_DRIVE_FOLDER_ID else []
-        }
-        
-        # Upload file using Google Drive API
-        files = {
-            'metadata': (None, json.dumps(metadata), 'application/json; charset=UTF-8'),
-            'media': (filename, content, 'application/json')
-        }
-        
-        response = requests.post(
-            f"https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&key={GOOGLE_DRIVE_API_KEY}",
-            files=files
-        )
-        
-        if response.status_code == 200:
-            print(f"Successfully uploaded {filename} to Google Drive")
-            return True
-        else:
-            print(f"Failed to upload {filename}: {response.text}")
-            return False
-            
+        os.makedirs('data', exist_ok=True)
+        local_path = os.path.join('data', filename)
+        with open(local_path, 'w', encoding='utf-8') as f:
+            f.write(content)
+        print(f"Saved {filename} locally to {local_path}")
+        return True
     except Exception as e:
-        print(f"Error uploading to Google Drive: {str(e)}")
+        print(f"Error saving locally: {str(e)}")
         return False
 
 def download_from_google_drive(filename: str) -> Optional[Dict]:
-    """Download a file from Google Drive by filename"""
+    """Load file from local storage (Google Drive disabled due to API permissions)"""
     try:
-        # Search for the file
-        search_url = f"https://www.googleapis.com/drive/v3/files?q=name='{filename}'&key={GOOGLE_DRIVE_API_KEY}"
-        search_response = requests.get(search_url)
-        
-        if search_response.status_code != 200:
-            print(f"Failed to search for {filename}: {search_response.text}")
-            return None
-            
-        search_data = search_response.json()
-        files = search_data.get('files', [])
-        
-        if not files:
-            print(f"File {filename} not found on Google Drive")
-            return None
-            
-        file_id = files[0]['id']
-        
-        # Download the file content
-        download_url = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media&key={GOOGLE_DRIVE_API_KEY}"
-        download_response = requests.get(download_url)
-        
-        if download_response.status_code == 200:
-            return json.loads(download_response.text)
+        local_path = os.path.join('data', filename)
+        if os.path.exists(local_path):
+            with open(local_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
         else:
-            print(f"Failed to download {filename}: {download_response.text}")
+            print(f"Local file {local_path} not found")
             return None
-            
     except Exception as e:
-        print(f"Error downloading from Google Drive: {str(e)}")
+        print(f"Error loading from local storage: {str(e)}")
         return None
 
 def calculate_daily_words_background(date_str: str, daily_word: str):
@@ -512,6 +481,17 @@ def get_historical_similarity(date: str, word1: str, word2: str):
             status_code=500,
             content={"error": "Internal server error"}
         )
+
+@app.get("/admin/set-daily-word")
+def get_set_daily_word_info(credentials: HTTPBasicCredentials = Depends(verify_admin_credentials)):
+    """Get info about setting daily words (admin only) - Use POST to actually set"""
+    return {
+        "message": "Use POST method to set daily word",
+        "usage": "POST /admin/set-daily-word?date=dd/mm/yyyy&word=yourword",
+        "example": "POST /admin/set-daily-word?date=24/07/2025&word=שלום",
+        "current_cached_dates": list(daily_words_cache.keys()),
+        "today": get_today_date()
+    }
 
 @app.post("/admin/set-daily-word")
 def set_daily_word(date: str, word: str, credentials: HTTPBasicCredentials = Depends(verify_admin_credentials)):
