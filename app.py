@@ -266,9 +266,10 @@ def download_from_google_drive(filename: str) -> Optional[Dict]:
         return None
 
 def calculate_daily_words_background(date_str: str, daily_word: str):
-    """Background task to calculate 1000 most similar words"""
+    """Background task to calculate 1000 most similar words with improved error handling"""
     print(f"=== BACKGROUND TASK STARTED ===")
     print(f"Date: {date_str}, Word: {daily_word}")
+    print(f"Thread ID: {threading.get_ident()}")
     
     try:
         # Ensure model is loaded
@@ -278,6 +279,7 @@ def calculate_daily_words_background(date_str: str, daily_word: str):
             return
             
         print(f"Model confirmed loaded in background task")
+        print(f"Model vocabulary size: {len(current_model.wv.key_to_index)}")
         
         if daily_word not in current_model.wv:
             print(f"ERROR: Daily word '{daily_word}' not in vocabulary in background task")
@@ -286,23 +288,74 @@ def calculate_daily_words_background(date_str: str, daily_word: str):
         print(f"Daily word '{daily_word}' confirmed in vocabulary")
         print(f"Starting similarity calculation...")
         
-        # Calculate 1000 most similar words
-        similar_words = current_model.wv.most_similar(daily_word, topn=1000)
-        print(f"Similarity calculation completed. Found {len(similar_words)} similar words")
+        # Add progress tracking and memory management
+        similar_words = None
+        try:
+            # First, let's try with a smaller number to test
+            print("Testing with top 10 words first...")
+            test_similar = current_model.wv.most_similar(daily_word, topn=10)
+            print(f"Test successful - found {len(test_similar)} words")
+            print(f"Sample results: {test_similar[:3]}")
+            
+            # Now try with 100
+            print("Testing with top 100 words...")
+            test_similar_100 = current_model.wv.most_similar(daily_word, topn=100)
+            print(f"100 words test successful - found {len(test_similar_100)} words")
+            
+            # Now try the full 1000
+            print("Calculating full 1000 most similar words...")
+            similar_words = current_model.wv.most_similar(daily_word, topn=1000)
+            print(f"Similarity calculation completed. Found {len(similar_words)} similar words")
+            
+        except MemoryError as me:
+            print(f"MEMORY ERROR during similarity calculation: {str(me)}")
+            print("Trying with smaller batch size...")
+            # Fallback to smaller number
+            try:
+                similar_words = current_model.wv.most_similar(daily_word, topn=500)
+                print(f"Fallback successful with 500 words: {len(similar_words)} similar words")
+            except Exception as e2:
+                print(f"Even fallback to 500 failed: {str(e2)}")
+                try:
+                    similar_words = current_model.wv.most_similar(daily_word, topn=250)
+                    print(f"Fallback to 250 words successful: {len(similar_words)} similar words")
+                except Exception as e3:
+                    print(f"Even fallback to 250 failed: {str(e3)}")
+                    return
+                
+        except Exception as calc_error:
+            print(f"ERROR during similarity calculation: {str(calc_error)}")
+            print(f"Error type: {type(calc_error)}")
+            traceback.print_exc()
+            return
         
-        # Create the data structure
+        if similar_words is None:
+            print("ERROR: similar_words is None after calculation")
+            return
+            
+        print(f"Processing {len(similar_words)} similar words into data structure...")
+        
+        # Create the data structure with progress tracking
+        similar_words_data = []
+        for rank, (word, similarity) in enumerate(reversed(similar_words)):
+            similar_words_data.append({
+                "word": word,
+                "similarity": float(similarity),
+                "rank": rank + 1  # rank 1-N, where 1 is least similar
+            })
+            
+            # Progress indicator
+            if (rank + 1) % 200 == 0:
+                print(f"Processed {rank + 1} words...")
+        
         daily_data = {
             "date": date_str,
             "daily_word": daily_word,
-            "similar_words": [
-                {
-                    "word": word,
-                    "similarity": float(similarity),
-                    "rank": rank + 1  # rank 1-1000, where 1 is least similar
-                }
-                for rank, (word, similarity) in enumerate(reversed(similar_words))
-            ],
-            "created_at": datetime.now(timezone.utc).isoformat()
+            "similar_words": similar_words_data,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "total_words": len(similar_words_data),
+            "calculation_method": "word2vec_most_similar",
+            "model_vocab_size": len(current_model.wv.key_to_index)
         }
         
         print(f"Data structure created with {len(daily_data['similar_words'])} words")
@@ -311,26 +364,61 @@ def calculate_daily_words_background(date_str: str, daily_word: str):
         daily_words_cache[date_str] = daily_data
         print(f"Data cached in memory for {date_str}")
         
-        # Save to local storage
+        # Save to local storage with better error handling
         filename = date_to_filename(date_str)
-        content = json.dumps(daily_data, indent=2, ensure_ascii=False)
-        success = upload_to_google_drive(filename, content)
-        
-        if success:
-            print(f"Data saved to local storage as {filename}")
-        else:
-            print(f"ERROR: Failed to save data to local storage")
+        try:
+            content = json.dumps(daily_data, indent=2, ensure_ascii=False)
+            print(f"JSON serialization successful, size: {len(content)} characters")
+            
+            success = upload_to_google_drive(filename, content)
+            
+            if success:
+                print(f"Data saved to local storage as {filename}")
+                # Verify the file was saved correctly
+                local_path = os.path.join('data', filename)
+                if os.path.exists(local_path):
+                    file_size = os.path.getsize(local_path)
+                    print(f"File verified: {local_path} ({file_size} bytes)")
+                else:
+                    print(f"WARNING: File not found after save: {local_path}")
+            else:
+                print(f"ERROR: Failed to save data to local storage")
+                
+        except Exception as save_error:
+            print(f"ERROR during save process: {str(save_error)}")
+            traceback.print_exc()
         
         print(f"=== BACKGROUND TASK COMPLETED SUCCESSFULLY ===")
+        print(f"Final stats: {len(similar_words_data)} words processed for '{daily_word}' on {date_str}")
         
     except Exception as e:
-        print(f"!!! ERROR in background calculation for {date_str}: {str(e)} !!!")
+        print(f"!!! CRITICAL ERROR in background calculation for {date_str}: {str(e)} !!!")
+        print(f"Error type: {type(e)}")
         traceback.print_exc()
+        
+        # Try to save error info to cache so we know what happened
+        try:
+            error_data = {
+                "date": date_str,
+                "daily_word": daily_word,
+                "error": str(e),
+                "error_type": str(type(e)),
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "status": "error",
+                "thread_id": threading.get_ident()
+            }
+            daily_words_cache[f"{date_str}_error"] = error_data
+            print(f"Error info cached for debugging")
+        except:
+            print("Could not even cache error info")
+            
     finally:
         # Remove from background tasks tracking
         if date_str in background_tasks:
             del background_tasks[date_str]
             print(f"Removed {date_str} from background_tasks tracking")
+        else:
+            print(f"WARNING: {date_str} was not in background_tasks tracking")
 
 def load_daily_words(date_str: str) -> Optional[Dict]:
     """Load daily words data, either from cache or Google Drive"""
@@ -360,6 +448,8 @@ def get_word_rank(daily_data: Dict, word: str) -> int:
     
     return 0
 
+# ========== API ENDPOINTS ==========
+
 @app.head("/")
 def health_check_head():
     """Handle HEAD requests for health check"""
@@ -374,7 +464,10 @@ def health_check():
     return {
         "status": "healthy", 
         "message": "Enhanced Word2Vec API is running!",
-        "model_loaded": model is not None
+        "model_loaded": model is not None,
+        "current_time": datetime.now(timezone.utc).isoformat(),
+        "cached_dates": list(daily_words_cache.keys()),
+        "active_calculations": len([t for t in background_tasks.values() if t.is_alive()])
     }
 
 @app.get("/similarity")
@@ -421,7 +514,8 @@ def get_similarity(word1: str, word2: str):
             "word2": word2,
             "similarity": similarity_value,
             "rank": rank,
-            "is_daily_word": daily_data is not None and daily_data["daily_word"] == word2
+            "is_daily_word": daily_data is not None and daily_data["daily_word"] == word2,
+            "date": today
         }
         
     except Exception as e:
@@ -503,6 +597,47 @@ def get_historical_similarity(date: str, word1: str, word2: str):
             content={"error": "Internal server error"}
         )
 
+@app.get("/daily-word")
+def get_daily_word(date: Optional[str] = None):
+    """Get the daily word for a specific date (defaults to today)"""
+    target_date = date if date else get_today_date()
+    
+    try:
+        if date:
+            # Validate date format
+            try:
+                parse_date(date)
+            except ValueError:
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": "Invalid date format. Use dd/mm/yyyy"}
+                )
+        
+        daily_data = load_daily_words(target_date)
+        if not daily_data:
+            return JSONResponse(
+                status_code=404,
+                content={"error": f"No daily word set for {target_date}"}
+            )
+        
+        return {
+            "date": target_date,
+            "daily_word": daily_data["daily_word"],
+            "created_at": daily_data.get("created_at"),
+            "total_similar_words": len(daily_data.get("similar_words", [])),
+            "calculation_method": daily_data.get("calculation_method", "unknown")
+        }
+        
+    except Exception as e:
+        print(f"Error in /daily-word: {str(e)}")
+        traceback.print_exc()
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Internal server error"}
+        )
+
+# ========== ADMIN ENDPOINTS ==========
+
 @app.head("/admin/set-daily-word")
 def head_set_daily_word_info(credentials: HTTPBasicCredentials = Depends(verify_admin_credentials)):
     """Handle HEAD requests for set daily word"""
@@ -528,7 +663,11 @@ def get_set_daily_word_info(date: Optional[str] = None, word: Optional[str] = No
             "example": "GET /admin/set-daily-word?date=24/07/2025&word=שלום",
             "current_cached_dates": list(daily_words_cache.keys()),
             "today": get_today_date(),
-            "model_loaded": model is not None
+            "model_loaded": model is not None,
+            "active_calculations": {
+                date: "running" if thread.is_alive() else "finished"
+                for date, thread in background_tasks.items()
+            }
         }
 
 def set_daily_word_internal(date: str, word: str):
@@ -596,10 +735,11 @@ def set_daily_word_internal(date: str, word: str):
         print(f"Background thread started for {date}")
         
         return {
-            "message": f"Daily word for {date} set to '{word}'. Calculating 1000 most similar words in background.",
+            "message": f"Daily word for {date} set to '{word}'. Calculating similar words in background.",
             "date": date,
             "daily_word": word,
-            "status": "processing"
+            "status": "processing",
+            "thread_id": thread.ident
         }
         
     except Exception as e:
@@ -614,6 +754,249 @@ def set_daily_word_internal(date: str, word: str):
 def set_daily_word(date: str, word: str, credentials: HTTPBasicCredentials = Depends(verify_admin_credentials)):
     """Set the daily word for a specific date (admin only)"""
     return set_daily_word_internal(date, word)
+
+@app.get("/admin/calculation-status")
+def get_calculation_status(date: str, credentials: HTTPBasicCredentials = Depends(verify_admin_credentials)):
+    """Check if background calculation is complete for a date (admin only)"""
+    try:
+        parse_date(date)
+    except ValueError:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "Invalid date format. Use dd/mm/yyyy"}
+        )
+    
+    is_running = date in background_tasks and background_tasks[date].is_alive()
+    is_cached = date in daily_words_cache
+    has_error = f"{date}_error" in daily_words_cache
+    
+    status = "unknown"
+    if is_running:
+        status = "running"
+    elif is_cached and not has_error:
+        status = "completed"
+    elif has_error:
+        status = "error"
+    else:
+        status = "not_started"
+    
+    result = {
+        "date": date,
+        "status": status,
+        "is_running": is_running,
+        "is_cached": is_cached,
+        "has_error": has_error
+    }
+    
+    if is_cached:
+        data = daily_words_cache[date]
+        result["daily_word"] = data.get("daily_word")
+        result["word_count"] = len(data.get("similar_words", []))
+        result["created_at"] = data.get("created_at")
+        result["calculation_method"] = data.get("calculation_method")
+    
+    if has_error:
+        error_data = daily_words_cache[f"{date}_error"]
+        result["error_info"] = {
+            "error": error_data.get("error"),
+            "error_type": error_data.get("error_type"),
+            "created_at": error_data.get("created_at"),
+            "thread_id": error_data.get("thread_id")
+        }
+    
+    return result
+
+@app.post("/admin/retry-calculation")
+def retry_calculation(date: str, word: str, force: bool = False, credentials: HTTPBasicCredentials = Depends(verify_admin_credentials)):
+    """Retry or force restart the background calculation for a specific date (admin only)"""
+    
+    try:
+        parse_date(date)
+    except ValueError:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "Invalid date format. Use dd/mm/yyyy"}
+        )
+    
+    # Try to load model if it's not loaded
+    if model is None:
+        load_model()
+    
+    if model is None:
+        return JSONResponse(
+            status_code=503,
+            content={"error": "Model is not loaded. Please check server logs."}
+        )
+    
+    # Check if word exists in vocabulary
+    if word not in model.wv:
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"Word not found in vocabulary: {word}"}
+        )
+    
+    # Check current status
+    is_running = date in background_tasks and background_tasks[date].is_alive()
+    is_cached = date in daily_words_cache
+    
+    if is_running and not force:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "error": f"Calculation is already running for {date}. Use force=true to restart.",
+                "current_status": "running"
+            }
+        )
+    
+    if is_cached and not force:
+        data = daily_words_cache[date]
+        return JSONResponse(
+            status_code=200,
+            content={
+                "message": f"Calculation already completed for {date}. Use force=true to recalculate.",
+                "current_status": "completed",
+                "daily_word": data.get("daily_word"),
+                "word_count": len(data.get("similar_words", [])),
+                "created_at": data.get("created_at")
+            }
+        )
+    
+    # Clean up any existing background task
+    if date in background_tasks:
+        old_thread = background_tasks[date]
+        if old_thread.is_alive():
+            print(f"WARNING: Forcing restart while thread is still alive for {date}")
+        del background_tasks[date]
+    
+    # Clean up any cached data if forcing
+    if force:
+        if date in daily_words_cache:
+            del daily_words_cache[date]
+            print(f"Cleared cached data for {date}")
+        if f"{date}_error" in daily_words_cache:
+            del daily_words_cache[f"{date}_error"]
+            print(f"Cleared cached error data for {date}")
+    
+    # Start new background calculation
+    print(f"Starting{'(FORCED)' if force else ''} background calculation for {date} with word '{word}'")
+    thread = threading.Thread(
+        target=calculate_daily_words_background,
+        args=(date, word),
+        daemon=True
+    )
+    background_tasks[date] = thread
+    thread.start()
+    
+    return {
+        "message": f"{'Restarted' if force else 'Started'} calculation for {date} with word '{word}'",
+        "date": date,
+        "daily_word": word,
+        "status": "processing",
+        "forced": force,
+        "thread_id": thread.ident
+    }
+
+@app.get("/admin/clear-cache")
+def clear_cache(date: Optional[str] = None, credentials: HTTPBasicCredentials = Depends(verify_admin_credentials)):
+    """Clear cached data for a specific date or all dates (admin only)"""
+    
+    if date:
+        try:
+            parse_date(date)
+        except ValueError:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "Invalid date format. Use dd/mm/yyyy"}
+            )
+        
+        cleared = []
+        if date in daily_words_cache:
+            del daily_words_cache[date]
+            cleared.append(date)
+        
+        if f"{date}_error" in daily_words_cache:
+            del daily_words_cache[f"{date}_error"]
+            cleared.append(f"{date}_error")
+        
+        return {
+            "message": f"Cleared cache for {date}",
+            "cleared_entries": cleared,
+            "remaining_entries": list(daily_words_cache.keys())
+        }
+    else:
+        # Clear all cache
+        cache_size = len(daily_words_cache)
+        cleared_entries = list(daily_words_cache.keys())
+        daily_words_cache.clear()
+        
+        return {
+            "message": "Cleared all cached data",
+            "cleared_count": cache_size,
+            "cleared_entries": cleared_entries
+        }
+
+@app.post("/admin/download-model")
+def download_model_endpoint(credentials: HTTPBasicCredentials = Depends(verify_admin_credentials)):
+    """Force download model files (admin only)"""
+    global model
+    model = None  # Reset the model
+    
+    print("Starting manual model download...")
+    success = download_model_files()
+    
+    if success:
+        model = load_model()
+        return {
+            "message": "Model download completed",
+            "model_loaded": model is not None,
+            "files_in_directory": os.listdir(".") if os.path.exists(".") else []
+        }
+    else:
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Failed to download model files"}
+        )
+
+@app.get("/admin/status")
+def get_admin_status(credentials: HTTPBasicCredentials = Depends(verify_admin_credentials)):
+    """Get status of daily words and background tasks (admin only)"""
+    return {
+        "cached_dates": list(daily_words_cache.keys()),
+        "cached_errors": [key for key in daily_words_cache.keys() if "_error" in key],
+        "background_tasks": {
+            date: {
+                "status": "running" if thread.is_alive() else "completed",
+                "thread_id": thread.ident,
+                "is_alive": thread.is_alive()
+            }
+            for date, thread in background_tasks.items()
+        },
+        "today": get_today_date(),
+        "model_loaded": model is not None,
+        "model_vocab_size": len(model.wv.key_to_index) if model else 0,
+        "current_time": datetime.now(timezone.utc).isoformat()
+    }
+
+# ========== DEBUG ENDPOINTS ==========
+
+@app.get("/debug/background-status")
+def debug_background_status():
+    """Debug endpoint to check background task status"""
+    return {
+        "active_background_tasks": {
+            date: {
+                "status": "running" if thread.is_alive() else "finished",
+                "thread_id": thread.ident,
+                "is_daemon": thread.daemon
+            }
+            for date, thread in background_tasks.items()
+        },
+        "cached_dates": list(daily_words_cache.keys()),
+        "cached_errors": [key for key in daily_words_cache.keys() if "_error" in key],
+        "model_loaded": model is not None,
+        "current_time": datetime.now(timezone.utc).isoformat(),
+        "total_threads": threading.active_count()
+    }
 
 @app.get("/debug/test-model")
 def test_model():
@@ -636,17 +1019,37 @@ def test_model():
                 "vocabulary_size": len(model.wv.key_to_index)
             }
         else:
-            return {
-                "model_loaded": True,
-                "test_word": test_word,
-                "error": f"Test word '{test_word}' not in vocabulary",
-                "vocabulary_size": len(model.wv.key_to_index),
-                "sample_words": list(model.wv.key_to_index.keys())[:10]
-            }
+            # Try another common word
+            test_words = ["אני", "את", "של", "על", "כל", "לא", "יש"]
+            found_word = None
+            for tw in test_words:
+                if tw in model.wv:
+                    found_word = tw
+                    break
+            
+            if found_word:
+                similar = model.wv.most_similar(found_word, topn=5)
+                return {
+                    "model_loaded": True,
+                    "test_word": found_word,
+                    "original_test_word": test_word,
+                    "original_test_word_found": False,
+                    "similar_words": [{"word": word, "similarity": float(sim)} for word, sim in similar],
+                    "vocabulary_size": len(model.wv.key_to_index)
+                }
+            else:
+                return {
+                    "model_loaded": True,
+                    "test_word": test_word,
+                    "error": f"None of the test words found in vocabulary",
+                    "vocabulary_size": len(model.wv.key_to_index),
+                    "sample_words": list(model.wv.key_to_index.keys())[:20]
+                }
     except Exception as e:
         return {
             "model_loaded": True,
-            "error": f"Error testing model: {str(e)}"
+            "error": f"Error testing model: {str(e)}",
+            "error_type": str(type(e))
         }
 
 @app.get("/debug/files")
@@ -655,84 +1058,53 @@ def debug_files():
     try:
         current_dir = os.getcwd()
         files = os.listdir(".")
+        
+        model_files_info = {}
+        model_files = ["model.mdl", "model.mdl.wv.vectors.npy", "model.mdl.syn1neg.npy"]
+        
+        for filename in model_files:
+            if os.path.exists(filename):
+                size = os.path.getsize(filename)
+                model_files_info[filename] = {
+                    "exists": True,
+                    "size": size,
+                    "size_mb": round(size / (1024*1024), 2)
+                }
+            else:
+                model_files_info[filename] = {"exists": False}
+        
         return {
             "current_directory": current_dir,
-            "files": files,
-            "model_file_exists": os.path.exists("model.mdl"),
-            "model_loaded": model is not None
+            "all_files": files,
+            "model_files": model_files_info,
+            "model_loaded": model is not None,
+            "data_directory_exists": os.path.exists("data"),
+            "data_files": os.listdir("data") if os.path.exists("data") else []
         }
     except Exception as e:
         return {"error": str(e)}
 
-@app.post("/admin/download-model")
-def download_model(credentials: HTTPBasicCredentials = Depends(verify_admin_credentials)):
-    """Force download model files (admin only)"""
-    global model
-    model = None  # Reset the model
+@app.get("/debug/cache-contents")
+def debug_cache_contents():
+    """Debug endpoint to see what's in the cache"""
+    cache_info = {}
     
-    print("Starting manual model download...")
-    success = download_model_files()
+    for key, value in daily_words_cache.items():
+        if isinstance(value, dict):
+            cache_info[key] = {
+                "type": "error" if "_error" in key else "data",
+                "daily_word": value.get("daily_word"),
+                "created_at": value.get("created_at"),
+                "word_count": len(value.get("similar_words", [])) if "similar_words" in value else 0,
+                "has_error": "error" in value,
+                "status": value.get("status"),
+                "keys": list(value.keys())
+            }
+        else:
+            cache_info[key] = {"type": "unknown", "value_type": str(type(value))}
     
-    if success:
-        model = load_model()
-        return {
-            "message": "Model download completed",
-            "model_loaded": model is not None,
-            "files_in_directory": os.listdir(".") if os.path.exists(".") else []
-        }
-    else:
-        return JSONResponse(
-            status_code=500,
-            content={"error": "Failed to download model files"}
-        )
-
-@app.post("/admin/reload-model")
-def get_admin_status(credentials: HTTPBasicCredentials = Depends(verify_admin_credentials)):
-    """Get status of daily words and background tasks (admin only)"""
     return {
-        "cached_dates": list(daily_words_cache.keys()),
-        "background_tasks": {
-            date: "running" if thread.is_alive() else "completed"
-            for date, thread in background_tasks.items()
-        },
-        "today": get_today_date(),
-        "model_loaded": model is not None
+        "cache_entries": cache_info,
+        "total_entries": len(daily_words_cache),
+        "error_entries": len([k for k in daily_words_cache.keys() if "_error" in k])
     }
-
-@app.get("/daily-word")
-def get_daily_word(date: Optional[str] = None):
-    """Get the daily word for a specific date (defaults to today)"""
-    target_date = date if date else get_today_date()
-    
-    try:
-        if date:
-            # Validate date format
-            try:
-                parse_date(date)
-            except ValueError:
-                return JSONResponse(
-                    status_code=400,
-                    content={"error": "Invalid date format. Use dd/mm/yyyy"}
-                )
-        
-        daily_data = load_daily_words(target_date)
-        if not daily_data:
-            return JSONResponse(
-                status_code=404,
-                content={"error": f"No daily word set for {target_date}"}
-            )
-        
-        return {
-            "date": target_date,
-            "daily_word": daily_data["daily_word"],
-            "created_at": daily_data.get("created_at"),
-            "total_similar_words": len(daily_data.get("similar_words", []))
-        }
-        
-    except Exception as e:
-        print(f"Error in /daily-word: {str(e)}")
-        traceback.print_exc()
-        return JSONResponse(
-            status_code=500,
-            content={"error": "Internal server error"}
-        )
