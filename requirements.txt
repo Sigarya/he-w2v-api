@@ -1,7 +1,7 @@
-uvicorn
+uvicorn==0.23.2
 gensim==4.3.3
-numpy
-fastapi
-requests
-python-multipart
-gdown
+numpy==1.24.3
+fastapi==0.104.1
+requests==2.31.0
+python-multipart==0.0.6
+gdown==4.7.1
