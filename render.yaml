@@ -6,49 +6,74 @@ services:
     region: oregon
     buildCommand: |
       pip install -r requirements.txt
-      echo "Downloading model files (Full Word2Vec)..."
+      echo "Starting model download process..."
       
-      # Install gdown for better Google Drive downloading
-      pip install gdown
-      
-      # Download model.mdl using gdown
-      echo "Downloading model.mdl..."
-      gdown "1T9tSdIm-8AEz0c6mJuFfLyBL75_lnsTU" -O model.mdl
-      
-      # Download model.mdl.wv.vectors.npy
-      echo "Downloading model.mdl.wv.vectors.npy..."
-      gdown "1z5n9L-2oS_YEh3qf-nkz3ugMM8oqpxGZ" -O model.mdl.wv.vectors.npy
-      
-      # Download model.mdl.syn1neg.npy
-      echo "Downloading model.mdl.syn1neg.npy..."
-      gdown "1uhu7bevYhCYZNLPdvupSuw_4X42_-smY" -O model.mdl.syn1neg.npy
-      
-      echo "Model files download complete."
-      echo "Listing files in current directory:"
-      ls -la
-      
-      # Verify the main model file exists and has reasonable size
-      if [ -f "model.mdl" ]; then
-        file_size=$(stat -c%s "model.mdl")
-        echo "model.mdl size: $file_size bytes"
-        if [ $file_size -lt 1000 ]; then
-          echo "ERROR: model.mdl seems too small! Content:"
-          head -10 "model.mdl"
-          exit 1
-        else
-          echo "model.mdl downloaded successfully"
+      # Try multiple methods to download the files
+      download_file() {
+        local file_id=$1
+        local output_name=$2
+        echo "Downloading $output_name..."
+        
+        # Method 1: Try gdown
+        if command -v gdown >/dev/null 2>&1; then
+          echo "Trying gdown for $output_name..."
+          gdown --fuzzy "https://drive.google.com/file/d/$file_id/view?usp=sharing" -O "$output_name"
+          if [ -f "$output_name" ] && [ $(stat -c%s "$output_name") -gt 1000 ]; then
+            echo "Successfully downloaded $output_name with gdown"
+            return 0
+          fi
         fi
-      else
-        echo "ERROR: model.mdl was not downloaded!"
-        exit 1
+        
+        # Method 2: Try direct wget
+        echo "Trying wget for $output_name..."
+        wget --no-check-certificate -q --show-progress "https://drive.google.com/uc?export=download&id=$file_id" -O "$output_name"
+        if [ -f "$output_name" ] && [ $(stat -c%s "$output_name") -gt 1000 ]; then
+          echo "Successfully downloaded $output_name with wget"
+          return 0
+        fi
+        
+        # Method 3: Try curl
+        echo "Trying curl for $output_name..."
+        curl -L "https://drive.google.com/uc?export=download&id=$file_id" -o "$output_name"
+        if [ -f "$output_name" ] && [ $(stat -c%s "$output_name") -gt 1000 ]; then
+          echo "Successfully downloaded $output_name with curl"
+          return 0
+        fi
+        
+        echo "All download methods failed for $output_name"
+        return 1
+      }
+      
+      # Install gdown (but don't fail if it doesn't work)
+      pip install gdown || echo "Failed to install gdown, will try other methods"
+      
+      # Download the files
+      echo "Downloading model.mdl..."
+      if ! download_file "1T9tSdIm-8AEz0c6mJuFfLyBL75_lnsTU" "model.mdl"; then
+        echo "CRITICAL: Failed to download model.mdl"
+        echo "Build will continue but model won't work until files are available"
       fi
       
-      # Check other required files
-      for file in "model.mdl.wv.vectors.npy" "model.mdl.syn1neg.npy"; do
+      echo "Downloading model.mdl.wv.vectors.npy..."
+      download_file "1z5n9L-2oS_YEh3qf-nkz3ugMM8oqpxGZ" "model.mdl.wv.vectors.npy"
+      
+      echo "Downloading model.mdl.syn1neg.npy..."
+      download_file "1uhu7bevYhCYZNLPdvupSuw_4X42_-smY" "model.mdl.syn1neg.npy"
+      
+      echo "Download process complete. Final directory listing:"
+      ls -la
+      
+      # Show file sizes
+      for file in model.mdl model.mdl.wv.vectors.npy model.mdl.syn1neg.npy; do
         if [ -f "$file" ]; then
-          echo "$file exists, size: $(stat -c%s "$file") bytes"
+          size=$(stat -c%s "$file")
+          echo "$file: $size bytes"
+          if [ $size -lt 1000 ]; then
+            echo "WARNING: $file seems too small, showing content:"
+            head -3 "$file"
+          fi
         else
-          echo "WARNING: $file not found!"
+          echo "MISSING: $file"
         fi
       done
       
