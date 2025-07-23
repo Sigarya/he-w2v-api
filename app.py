@@ -344,6 +344,11 @@ def get_word_rank(daily_data: Dict, word: str) -> int:
     
     return 0
 
+@app.head("/")
+def health_check_head():
+    """Handle HEAD requests for health check"""
+    return {}
+
 @app.get("/")
 def health_check():
     """Health check endpoint that also attempts to load model if needed"""
@@ -482,20 +487,30 @@ def get_historical_similarity(date: str, word1: str, word2: str):
             content={"error": "Internal server error"}
         )
 
-@app.get("/admin/set-daily-word")
-def get_set_daily_word_info(credentials: HTTPBasicCredentials = Depends(verify_admin_credentials)):
-    """Get info about setting daily words (admin only) - Use POST to actually set"""
-    return {
-        "message": "Use POST method to set daily word",
-        "usage": "POST /admin/set-daily-word?date=dd/mm/yyyy&word=yourword",
-        "example": "POST /admin/set-daily-word?date=24/07/2025&word=שלום",
-        "current_cached_dates": list(daily_words_cache.keys()),
-        "today": get_today_date()
-    }
+@app.head("/admin/set-daily-word")
+def head_set_daily_word_info(credentials: HTTPBasicCredentials = Depends(verify_admin_credentials)):
+    """Handle HEAD requests for set daily word"""
+    return {}
 
-@app.post("/admin/set-daily-word")
-def set_daily_word(date: str, word: str, credentials: HTTPBasicCredentials = Depends(verify_admin_credentials)):
-    """Set the daily word for a specific date (admin only)"""
+@app.get("/admin/set-daily-word")
+def get_set_daily_word_info(date: Optional[str] = None, word: Optional[str] = None, credentials: HTTPBasicCredentials = Depends(verify_admin_credentials)):
+    """Get info about setting daily words or actually set if params provided (admin only)"""
+    if date and word:
+        # If both parameters are provided, actually set the daily word
+        return set_daily_word_internal(date, word)
+    else:
+        # Otherwise, return usage info
+        return {
+            "message": "Use POST method to set daily word, or provide date and word parameters",
+            "usage": "POST /admin/set-daily-word?date=dd/mm/yyyy&word=yourword",
+            "alternative": "GET /admin/set-daily-word?date=dd/mm/yyyy&word=yourword",
+            "example": "GET /admin/set-daily-word?date=24/07/2025&word=שלום",
+            "current_cached_dates": list(daily_words_cache.keys()),
+            "today": get_today_date()
+        }
+
+def set_daily_word_internal(date: str, word: str):
+    """Internal function to set daily word"""
     # Try to load model if it's not loaded
     if model is None:
         load_model()
@@ -547,12 +562,17 @@ def set_daily_word(date: str, word: str, credentials: HTTPBasicCredentials = Dep
         }
         
     except Exception as e:
-        print(f"Error in /admin/set-daily-word: {str(e)}")
+        print(f"Error in set_daily_word_internal: {str(e)}")
         traceback.print_exc()
         return JSONResponse(
             status_code=500,
             content={"error": "Internal server error"}
         )
+
+@app.post("/admin/set-daily-word")
+def set_daily_word(date: str, word: str, credentials: HTTPBasicCredentials = Depends(verify_admin_credentials)):
+    """Set the daily word for a specific date (admin only)"""
+    return set_daily_word_internal(date, word)
 
 @app.get("/debug/files")
 def debug_files():
