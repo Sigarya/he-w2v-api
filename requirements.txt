@@ -4,3 +4,4 @@ numpy
 fastapi
 requests
 python-multipart
+gdown
