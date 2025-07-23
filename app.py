@@ -2,6 +2,7 @@ import os
 import json
 import traceback
 import threading
+import subprocess
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 import requests
@@ -24,6 +25,70 @@ model: Optional[Word2Vec] = None
 daily_words_cache: Dict[str, Dict] = {}  # Cache for loaded daily word data
 background_tasks: Dict[str, threading.Thread] = {}  # Track background calculations
 
+def download_model_files():
+    """Download model files if they don't exist"""
+    model_files = {
+        "model.mdl": "1T9tSdIm-8AEz0c6mJuFfLyBL75_lnsTU",
+        "model.mdl.wv.vectors.npy": "1z5n9L-2oS_YEh3qf-nkz3ugMM8oqpxGZ", 
+        "model.mdl.syn1neg.npy": "1uhu7bevYhCYZNLPdvupSuw_4X42_-smY"
+    }
+    
+    files_to_download = []
+    for filename, file_id in model_files.items():
+        if not os.path.exists(filename):
+            files_to_download.append((filename, file_id))
+        else:
+            # Check if file is too small (likely an error page)
+            try:
+                if os.path.getsize(filename) < 1000:
+                    print(f"{filename} exists but is too small, will re-download")
+                    files_to_download.append((filename, file_id))
+            except:
+                files_to_download.append((filename, file_id))
+    
+    if not files_to_download:
+        print("All model files exist")
+        return True
+    
+    print(f"Need to download {len(files_to_download)} model files...")
+    
+    for filename, file_id in files_to_download:
+        print(f"Downloading {filename}...")
+        
+        # Try gdown first
+        try:
+            result = subprocess.run([
+                "python", "-m", "gdown", 
+                f"https://drive.google.com/file/d/{file_id}/view?usp=sharing",
+                "-O", filename
+            ], capture_output=True, text=True, timeout=300)
+            
+            if os.path.exists(filename) and os.path.getsize(filename) > 1000:
+                print(f"Successfully downloaded {filename} with gdown")
+                continue
+        except Exception as e:
+            print(f"gdown failed for {filename}: {e}")
+        
+        # Try direct download
+        try:
+            url = f"https://drive.google.com/uc?export=download&id={file_id}"
+            response = requests.get(url, stream=True, timeout=300)
+            if response.status_code == 200:
+                with open(filename, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        f.write(chunk)
+                
+                if os.path.getsize(filename) > 1000:
+                    print(f"Successfully downloaded {filename} with requests")
+                    continue
+        except Exception as e:
+            print(f"Direct download failed for {filename}: {e}")
+        
+        print(f"Failed to download {filename}")
+        return False
+    
+    return True
+
 def load_model():
     """Load the Word2Vec model with retry logic"""
     global model
@@ -33,7 +98,7 @@ def load_model():
     model_path = os.getenv("MODEL_PATH", "model.mdl")
     print(f"Attempting to load model from: {model_path}")
     
-    # Check if model file exists
+    # Check if model file exists, if not try to download
     if not os.path.exists(model_path):
         print(f"Model file not found at {model_path}")
         print("Current directory contents:")
@@ -41,7 +106,13 @@ def load_model():
             print(os.listdir("."))
         except Exception as e:
             print(f"Could not list directory: {e}")
-        return None
+        
+        print("Attempting to download model files...")
+        if download_model_files():
+            print("Model files downloaded successfully")
+        else:
+            print("Failed to download model files")
+            return None
     
     try:
         model = Word2Vec.load(model_path)
@@ -437,6 +508,28 @@ def debug_files():
         }
     except Exception as e:
         return {"error": str(e)}
+
+@app.post("/admin/download-model")
+def download_model(credentials: HTTPBasicCredentials = Depends(verify_admin_credentials)):
+    """Force download model files (admin only)"""
+    global model
+    model = None  # Reset the model
+    
+    print("Starting manual model download...")
+    success = download_model_files()
+    
+    if success:
+        model = load_model()
+        return {
+            "message": "Model download completed",
+            "model_loaded": model is not None,
+            "files_in_directory": os.listdir(".") if os.path.exists(".") else []
+        }
+    else:
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Failed to download model files"}
+        )
 
 @app.post("/admin/reload-model")
 def get_admin_status(credentials: HTTPBasicCredentials = Depends(verify_admin_credentials)):
