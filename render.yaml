@@ -7,78 +7,168 @@ services:
     buildCommand: |
       pip install -r requirements.txt
       echo "Starting model download process..."
+      echo "Build environment info:"
+      echo "Python version: $(python --version)"
+      echo "Available memory: $(free -h)" || echo "free command not available"
+      echo "Disk space: $(df -h .)" || echo "df command not available"
       
       # Try multiple methods to download the files
       download_file() {
         local file_id=$1
         local output_name=$2
-        echo "Downloading $output_name..."
+        local max_retries=3
+        local retry=0
         
-        # Method 1: Try gdown
-        if command -v gdown >/dev/null 2>&1; then
-          echo "Trying gdown for $output_name..."
-          gdown --fuzzy "https://drive.google.com/file/d/$file_id/view?usp=sharing" -O "$output_name"
-          if [ -f "$output_name" ] && [ $(stat -c%s "$output_name") -gt 1000 ]; then
-            echo "Successfully downloaded $output_name with gdown"
-            return 0
+        echo "Downloading $output_name (file_id: $file_id)..."
+        
+        while [ $retry -lt $max_retries ]; do
+          echo "Attempt $((retry + 1)) of $max_retries for $output_name"
+          
+          # Method 1: Try gdown with --fuzzy
+          if command -v gdown >/dev/null 2>&1; then
+            echo "Trying gdown --fuzzy for $output_name..."
+            timeout 600 gdown --fuzzy "https://drive.google.com/file/d/$file_id/view?usp=sharing" -O "$output_name" --quiet
+            if [ -f "$output_name" ] && [ $(stat -c%s "$output_name") -gt 1000 ]; then
+              echo "Successfully downloaded $output_name with gdown --fuzzy ($(stat -c%s "$output_name") bytes)"
+              return 0
+            else
+              echo "gdown --fuzzy failed or returned small file for $output_name"
+              [ -f "$output_name" ] && rm "$output_name"
+            fi
           fi
-        fi
+          
+          # Method 2: Try gdown with --id
+          if command -v gdown >/dev/null 2>&1; then
+            echo "Trying gdown --id for $output_name..."
+            timeout 600 gdown --id "$file_id" -O "$output_name" --quiet
+            if [ -f "$output_name" ] && [ $(stat -c%s "$output_name") -gt 1000 ]; then
+              echo "Successfully downloaded $output_name with gdown --id ($(stat -c%s "$output_name") bytes)"
+              return 0
+            else
+              echo "gdown --id failed or returned small file for $output_name"
+              [ -f "$output_name" ] && rm "$output_name"
+            fi
+          fi
+          
+          # Method 3: Try direct wget with google drive export
+          echo "Trying wget for $output_name..."
+          timeout 600 wget --no-check-certificate -q --show-progress \
+            "https://drive.google.com/uc?export=download&id=$file_id" -O "$output_name"
+          if [ -f "$output_name" ] && [ $(stat -c%s "$output_name") -gt 1000 ]; then
+            # Check if it's not an HTML error page
+            if ! head -1 "$output_name" | grep -q "<!DOCTYPE\|<html"; then
+              echo "Successfully downloaded $output_name with wget ($(stat -c%s "$output_name") bytes)"
+              return 0
+            else
+              echo "wget returned HTML page for $output_name"
+              [ -f "$output_name" ] && rm "$output_name"
+            fi
+          else
+            echo "wget failed or returned small file for $output_name"
+            [ -f "$output_name" ] && rm "$output_name"
+          fi
+          
+          # Method 4: Try curl
+          echo "Trying curl for $output_name..."
+          timeout 600 curl -L -s --fail \
+            "https://drive.google.com/uc?export=download&id=$file_id" -o "$output_name"
+          if [ -f "$output_name" ] && [ $(stat -c%s "$output_name") -gt 1000 ]; then
+            if ! head -1 "$output_name" | grep -q "<!DOCTYPE\|<html"; then
+              echo "Successfully downloaded $output_name with curl ($(stat -c%s "$output_name") bytes)"
+              return 0
+            else
+              echo "curl returned HTML page for $output_name"
+              [ -f "$output_name" ] && rm "$output_name"
+            fi
+          else
+            echo "curl failed or returned small file for $output_name"
+            [ -f "$output_name" ] && rm "$output_name"
+          fi
+          
+          retry=$((retry + 1))
+          if [ $retry -lt $max_retries ]; then
+            echo "Waiting 10 seconds before retry..."
+            sleep 10
+          fi
+        done
         
-        # Method 2: Try direct wget
-        echo "Trying wget for $output_name..."
-        wget --no-check-certificate -q --show-progress "https://drive.google.com/uc?export=download&id=$file_id" -O "$output_name"
-        if [ -f "$output_name" ] && [ $(stat -c%s "$output_name") -gt 1000 ]; then
-          echo "Successfully downloaded $output_name with wget"
-          return 0
-        fi
-        
-        # Method 3: Try curl
-        echo "Trying curl for $output_name..."
-        curl -L "https://drive.google.com/uc?export=download&id=$file_id" -o "$output_name"
-        if [ -f "$output_name" ] && [ $(stat -c%s "$output_name") -gt 1000 ]; then
-          echo "Successfully downloaded $output_name with curl"
-          return 0
-        fi
-        
-        echo "All download methods failed for $output_name"
+        echo "All download methods failed for $output_name after $max_retries attempts"
         return 1
       }
       
       # Install gdown (but don't fail if it doesn't work)
+      echo "Installing gdown..."
       pip install gdown || echo "Failed to install gdown, will try other methods"
       
-      # Download the files
+      # Create model file size expectations
+      declare -A expected_sizes
+      expected_sizes["model.mdl"]=12000000          # ~12MB
+      expected_sizes["model.mdl.wv.vectors.npy"]=136000000  # ~136MB  
+      expected_sizes["model.mdl.syn1neg.npy"]=136000000     # ~136MB
+      
+      # Download the files with better error handling
+      success=true
+      
       echo "Downloading model.mdl..."
       if ! download_file "1T9tSdIm-8AEz0c6mJuFfLyBL75_lnsTU" "model.mdl"; then
         echo "CRITICAL: Failed to download model.mdl"
-        echo "Build will continue but model won't work until files are available"
+        success=false
       fi
       
       echo "Downloading model.mdl.wv.vectors.npy..."
-      download_file "1z5n9L-2oS_YEh3qf-nkz3ugMM8oqpxGZ" "model.mdl.wv.vectors.npy"
+      if ! download_file "1z5n9L-2oS_YEh3qf-nkz3ugMM8oqpxGZ" "model.mdl.wv.vectors.npy"; then
+        echo "CRITICAL: Failed to download model.mdl.wv.vectors.npy"
+        success=false
+      fi
       
       echo "Downloading model.mdl.syn1neg.npy..."
-      download_file "1uhu7bevYhCYZNLPdvupSuw_4X42_-smY" "model.mdl.syn1neg.npy"
+      if ! download_file "1uhu7bevYhCYZNLPdvupSuw_4X42_-smY" "model.mdl.syn1neg.npy"; then
+        echo "CRITICAL: Failed to download model.mdl.syn1neg.npy"
+        success=false
+      fi
       
       echo "Download process complete. Final directory listing:"
       ls -la
       
-      # Show file sizes
+      # Validate downloaded files
+      echo "Validating downloaded files:"
       for file in model.mdl model.mdl.wv.vectors.npy model.mdl.syn1neg.npy; do
         if [ -f "$file" ]; then
           size=$(stat -c%s "$file")
-          echo "$file: $size bytes"
+          expected=${expected_sizes[$file]}
+          echo "$file: $size bytes (expected: ~$expected)"
+          
           if [ $size -lt 1000 ]; then
-            echo "WARNING: $file seems too small, showing content:"
-            head -3 "$file"
+            echo "ERROR: $file is too small ($size bytes)"
+            echo "Content preview:"
+            head -3 "$file" || echo "Cannot read file"
+            success=false
+          elif [ -n "$expected" ] && [ $size -lt $((expected / 2)) ]; then
+            echo "WARNING: $file is smaller than expected (got $size, expected ~$expected)"
+          else
+            echo "✓ $file appears to be valid"
           fi
         else
-          echo "MISSING: $file"
+          echo "ERROR: Missing file: $file"
+          success=false
         fi
       done
+      
+      if [ "$success" = "false" ]; then
+        echo "BUILD WARNING: Some model files failed to download properly"
+        echo "The application will attempt to download them at runtime"
+      else
+        echo "✓ All model files downloaded successfully"
+      fi
+      
+      # Create data directory
+      mkdir -p data
+      echo "Created data directory for local storage"
       
     startCommand: uvicorn app:app --host 0.0.0.0 --port 10000
     healthCheckPath: /
     envVars:
       - key: PYTHON_VERSION
         value: '3.11'
+      - key: PYTHONUNBUFFERED
+        value: '1'
