@@ -1,6 +1,9 @@
+# requirements.txt
+
 uvicorn==0.24.0
 gensim==4.3.2
 numpy==1.26.4
+scipy==1.10.1  # <-- THIS IS THE NEW LINE THAT FIXES THE ERROR!
 fastapi==0.104.1
 requests==2.31.0
 python-multipart==0.0.6
