@@ -1,7 +1,11 @@
-uvicorn==0.23.2
-gensim==4.3.3
-numpy==1.24.3
+uvicorn==0.24.0
+gensim==4.3.2
+numpy==1.26.4
 fastapi==0.104.1
 requests==2.31.0
 python-multipart==0.0.6
 gdown==4.7.1
+google-api-python-client==2.108.0
+google-auth-httplib2==0.1.1
+google-auth-oauthlib==1.1.0
+python-dotenv==1.0.0
