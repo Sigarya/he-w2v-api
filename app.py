@@ -266,7 +266,7 @@ def download_from_google_drive(filename: str) -> Optional[Dict]:
         return None
 
 def calculate_daily_words_background(date_str: str, daily_word: str):
-    """Background task to calculate 1000 most similar words with improved error handling"""
+    """Background task to calculate 999 most similar words with improved error handling"""
     print(f"=== BACKGROUND TASK STARTED ===")
     print(f"Date: {date_str}, Word: {daily_word}")
     print(f"Thread ID: {threading.get_ident()}")
@@ -288,7 +288,7 @@ def calculate_daily_words_background(date_str: str, daily_word: str):
         print(f"Daily word '{daily_word}' confirmed in vocabulary")
         print(f"Starting similarity calculation...")
         
-        # Add progress tracking and memory management
+        # Calculate top 999 most similar words (excluding the daily word itself)
         similar_words = None
         try:
             # First, let's try with a smaller number to test
@@ -302,9 +302,9 @@ def calculate_daily_words_background(date_str: str, daily_word: str):
             test_similar_100 = current_model.wv.most_similar(daily_word, topn=100)
             print(f"100 words test successful - found {len(test_similar_100)} words")
             
-            # Now try the full 1000
-            print("Calculating full 1000 most similar words...")
-            similar_words = current_model.wv.most_similar(daily_word, topn=1000)
+            # Now try the full 999 (we need 999 because the daily word itself gets rank 1000)
+            print("Calculating 999 most similar words...")
+            similar_words = current_model.wv.most_similar(daily_word, topn=999)
             print(f"Similarity calculation completed. Found {len(similar_words)} similar words")
             
         except MemoryError as me:
@@ -335,18 +335,25 @@ def calculate_daily_words_background(date_str: str, daily_word: str):
             
         print(f"Processing {len(similar_words)} similar words into data structure...")
         
-        # Create the data structure with progress tracking
+        # Create the data structure with semantle-style ranking
+        # Rank 1000 = daily word (target)
+        # Rank 999 = most similar word
+        # Rank 998 = second most similar word
+        # ...
+        # Rank 1 = least similar word (or words not in top list get rank 0)
+        
         similar_words_data = []
-        for rank, (word, similarity) in enumerate(reversed(similar_words)):
+        for i, (word, similarity) in enumerate(similar_words):
+            semantle_rank = 999 - i  # 999, 998, 997, ..., down to (999 - len + 1)
             similar_words_data.append({
                 "word": word,
                 "similarity": float(similarity),
-                "rank": rank + 1  # rank 1-N, where 1 is least similar
+                "rank": semantle_rank
             })
             
             # Progress indicator
-            if (rank + 1) % 200 == 0:
-                print(f"Processed {rank + 1} words...")
+            if (i + 1) % 200 == 0:
+                print(f"Processed {i + 1} words...")
         
         daily_data = {
             "date": date_str,
@@ -354,8 +361,9 @@ def calculate_daily_words_background(date_str: str, daily_word: str):
             "similar_words": similar_words_data,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "total_words": len(similar_words_data),
-            "calculation_method": "word2vec_most_similar",
-            "model_vocab_size": len(current_model.wv.key_to_index)
+            "calculation_method": "word2vec_most_similar_semantle_ranking",
+            "model_vocab_size": len(current_model.wv.key_to_index),
+            "ranking_system": "semantle_1_to_1000"
         }
         
         print(f"Data structure created with {len(daily_data['similar_words'])} words")
@@ -438,15 +446,28 @@ def load_daily_words(date_str: str) -> Optional[Dict]:
     return None
 
 def get_word_rank(daily_data: Dict, word: str) -> int:
-    """Get the rank of a word in the daily words list (0 if not found)"""
+    """Get the semantle rank of a word (0 if not found, 1000 for daily word, 1-999 for similar words)"""
     if word == daily_data["daily_word"]:
-        return 1000
+        return 1000  # The daily word always gets rank 1000
     
+    # Look for the word in the similar words list
     for similar_word_data in daily_data["similar_words"]:
         if similar_word_data["word"] == word:
-            return 1000 - similar_word_data["rank"]  # Convert to our ranking system
+            return similar_word_data["rank"]  # This is already in semantle format (999, 998, 997, etc.)
     
-    return 0
+    return 0  # Word not found in top similar words
+
+def get_similarity_score(daily_data: Dict, word: str) -> float:
+    """Get the similarity score of a word to the daily word"""
+    if word == daily_data["daily_word"]:
+        return 100.0  # Perfect similarity
+    
+    # Look for the word in the similar words list
+    for similar_word_data in daily_data["similar_words"]:
+        if similar_word_data["word"] == word:
+            return similar_word_data["similarity"]
+    
+    return 0.0  # Word not found, no similarity
 
 # ========== API ENDPOINTS ==========
 
@@ -463,16 +484,17 @@ def health_check():
     
     return {
         "status": "healthy", 
-        "message": "Enhanced Word2Vec API is running!",
+        "message": "Enhanced Word2Vec API with Semantle Scoring is running!",
         "model_loaded": model is not None,
         "current_time": datetime.now(timezone.utc).isoformat(),
         "cached_dates": list(daily_words_cache.keys()),
-        "active_calculations": len([t for t in background_tasks.values() if t.is_alive()])
+        "active_calculations": len([t for t in background_tasks.values() if t.is_alive()]),
+        "scoring_system": "semantle_1_to_1000"
     }
 
 @app.get("/similarity")
 def get_similarity(word1: str, word2: str):
-    """Get similarity between two words with ranking for today's daily word"""
+    """Get similarity between two words with semantle ranking for today's daily word"""
     # Try to load model if it's not loaded
     if model is None:
         load_model()
@@ -506,16 +528,23 @@ def get_similarity(word1: str, word2: str):
         daily_data = load_daily_words(today)
         
         rank = 0
+        percentile = 0.0
         if daily_data and daily_data["daily_word"] == word2:
             rank = get_word_rank(daily_data, word1)
+            if rank > 0:
+                # Calculate percentile (what percentage of players would rank lower)
+                percentile = (rank / 1000.0) * 100
         
         return {
             "word1": word1,
             "word2": word2,
             "similarity": similarity_value,
             "rank": rank,
+            "percentile": round(percentile, 1),
+            "rank_display": f"{rank}/1000" if rank > 0 else "Not ranked",
             "is_daily_word": daily_data is not None and daily_data["daily_word"] == word2,
-            "date": today
+            "date": today,
+            "scoring_system": "semantle"
         }
         
     except Exception as e:
@@ -528,7 +557,7 @@ def get_similarity(word1: str, word2: str):
 
 @app.get("/similarity/historical")
 def get_historical_similarity(date: str, word1: str, word2: str):
-    """Get similarity for a specific historical date"""
+    """Get similarity for a specific historical date with semantle ranking"""
     # Try to load model if it's not loaded
     if model is None:
         load_model()
@@ -579,6 +608,7 @@ def get_historical_similarity(date: str, word1: str, word2: str):
         # Calculate similarity
         similarity_value = float(model.wv.similarity(word1, word2))
         rank = get_word_rank(daily_data, word1)
+        percentile = (rank / 1000.0) * 100 if rank > 0 else 0.0
         
         return {
             "date": date,
@@ -586,7 +616,10 @@ def get_historical_similarity(date: str, word1: str, word2: str):
             "word2": word2,
             "similarity": similarity_value,
             "rank": rank,
-            "daily_word": daily_data["daily_word"]
+            "percentile": round(percentile, 1),
+            "rank_display": f"{rank}/1000" if rank > 0 else "Not ranked",
+            "daily_word": daily_data["daily_word"],
+            "scoring_system": "semantle"
         }
         
     except Exception as e:
@@ -625,11 +658,77 @@ def get_daily_word(date: Optional[str] = None):
             "daily_word": daily_data["daily_word"],
             "created_at": daily_data.get("created_at"),
             "total_similar_words": len(daily_data.get("similar_words", [])),
-            "calculation_method": daily_data.get("calculation_method", "unknown")
+            "calculation_method": daily_data.get("calculation_method", "unknown"),
+            "ranking_system": daily_data.get("ranking_system", "semantle_1_to_1000"),
+            "scoring_system": "semantle"
         }
         
     except Exception as e:
         print(f"Error in /daily-word: {str(e)}")
+        traceback.print_exc()
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Internal server error"}
+        )
+
+@app.get("/rank")
+def get_word_rank_endpoint(word: str, date: Optional[str] = None):
+    """Get the semantle rank (1-1000) of a word for a specific date"""
+    target_date = date if date else get_today_date()
+    
+    try:
+        if date:
+            # Validate date format
+            try:
+                parse_date(date)
+            except ValueError:
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": "Invalid date format. Use dd/mm/yyyy"}
+                )
+        
+        # Try to load model if it's not loaded
+        if model is None:
+            load_model()
+        
+        if model is None:
+            return JSONResponse(
+                status_code=503,
+                content={"error": "Model is not loaded. Please check server logs."}
+            )
+        
+        # Check if word exists in vocabulary
+        if word not in model.wv:
+            return JSONResponse(
+                status_code=400,
+                content={"error": f"Word not found in vocabulary: {word}"}
+            )
+        
+        daily_data = load_daily_words(target_date)
+        if not daily_data:
+            return JSONResponse(
+                status_code=404,
+                content={"error": f"No daily word data found for {target_date}"}
+            )
+        
+        rank = get_word_rank(daily_data, word)
+        similarity = get_similarity_score(daily_data, word)
+        percentile = (rank / 1000.0) * 100 if rank > 0 else 0.0
+        
+        return {
+            "date": target_date,
+            "word": word,
+            "daily_word": daily_data["daily_word"],
+            "rank": rank,
+            "percentile": round(percentile, 1),
+            "rank_display": f"{rank}/1000" if rank > 0 else "Not ranked",
+            "similarity": similarity,
+            "is_daily_word": word == daily_data["daily_word"],
+            "scoring_system": "semantle"
+        }
+        
+    except Exception as e:
+        print(f"Error in /rank: {str(e)}")
         traceback.print_exc()
         return JSONResponse(
             status_code=500,
@@ -664,6 +763,7 @@ def get_set_daily_word_info(date: Optional[str] = None, word: Optional[str] = No
             "current_cached_dates": list(daily_words_cache.keys()),
             "today": get_today_date(),
             "model_loaded": model is not None,
+            "scoring_system": "semantle_1_to_1000",
             "active_calculations": {
                 date: "running" if thread.is_alive() else "finished"
                 for date, thread in background_tasks.items()
@@ -735,11 +835,13 @@ def set_daily_word_internal(date: str, word: str):
         print(f"Background thread started for {date}")
         
         return {
-            "message": f"Daily word for {date} set to '{word}'. Calculating similar words in background.",
+            "message": f"Daily word for {date} set to '{word}'. Calculating semantle rankings in background.",
             "date": date,
             "daily_word": word,
             "status": "processing",
-            "thread_id": thread.ident
+            "thread_id": thread.ident,
+            "scoring_system": "semantle_1_to_1000",
+            "expected_ranks": "999 most similar words will get ranks 999-1, daily word gets rank 1000"
         }
         
     except Exception as e:
@@ -785,7 +887,8 @@ def get_calculation_status(date: str, credentials: HTTPBasicCredentials = Depend
         "status": status,
         "is_running": is_running,
         "is_cached": is_cached,
-        "has_error": has_error
+        "has_error": has_error,
+        "scoring_system": "semantle_1_to_1000"
     }
     
     if is_cached:
@@ -794,6 +897,7 @@ def get_calculation_status(date: str, credentials: HTTPBasicCredentials = Depend
         result["word_count"] = len(data.get("similar_words", []))
         result["created_at"] = data.get("created_at")
         result["calculation_method"] = data.get("calculation_method")
+        result["ranking_system"] = data.get("ranking_system", "semantle_1_to_1000")
     
     if has_error:
         error_data = daily_words_cache[f"{date}_error"]
@@ -857,7 +961,8 @@ def retry_calculation(date: str, word: str, force: bool = False, credentials: HT
                 "current_status": "completed",
                 "daily_word": data.get("daily_word"),
                 "word_count": len(data.get("similar_words", [])),
-                "created_at": data.get("created_at")
+                "created_at": data.get("created_at"),
+                "scoring_system": "semantle_1_to_1000"
             }
         )
     
@@ -893,7 +998,8 @@ def retry_calculation(date: str, word: str, force: bool = False, credentials: HT
         "daily_word": word,
         "status": "processing",
         "forced": force,
-        "thread_id": thread.ident
+        "thread_id": thread.ident,
+        "scoring_system": "semantle_1_to_1000"
     }
 
 @app.get("/admin/clear-cache")
@@ -974,7 +1080,8 @@ def get_admin_status(credentials: HTTPBasicCredentials = Depends(verify_admin_cr
         "today": get_today_date(),
         "model_loaded": model is not None,
         "model_vocab_size": len(model.wv.key_to_index) if model else 0,
-        "current_time": datetime.now(timezone.utc).isoformat()
+        "current_time": datetime.now(timezone.utc).isoformat(),
+        "scoring_system": "semantle_1_to_1000"
     }
 
 # ========== DEBUG ENDPOINTS ==========
@@ -995,7 +1102,8 @@ def debug_background_status():
         "cached_errors": [key for key in daily_words_cache.keys() if "_error" in key],
         "model_loaded": model is not None,
         "current_time": datetime.now(timezone.utc).isoformat(),
-        "total_threads": threading.active_count()
+        "total_threads": threading.active_count(),
+        "scoring_system": "semantle_1_to_1000"
     }
 
 @app.get("/debug/test-model")
@@ -1016,7 +1124,8 @@ def test_model():
                 "model_loaded": True,
                 "test_word": test_word,
                 "similar_words": [{"word": word, "similarity": float(sim)} for word, sim in similar],
-                "vocabulary_size": len(model.wv.key_to_index)
+                "vocabulary_size": len(model.wv.key_to_index),
+                "scoring_system": "semantle_1_to_1000"
             }
         else:
             # Try another common word
@@ -1035,7 +1144,8 @@ def test_model():
                     "original_test_word": test_word,
                     "original_test_word_found": False,
                     "similar_words": [{"word": word, "similarity": float(sim)} for word, sim in similar],
-                    "vocabulary_size": len(model.wv.key_to_index)
+                    "vocabulary_size": len(model.wv.key_to_index),
+                    "scoring_system": "semantle_1_to_1000"
                 }
             else:
                 return {
@@ -1043,7 +1153,8 @@ def test_model():
                     "test_word": test_word,
                     "error": f"None of the test words found in vocabulary",
                     "vocabulary_size": len(model.wv.key_to_index),
-                    "sample_words": list(model.wv.key_to_index.keys())[:20]
+                    "sample_words": list(model.wv.key_to_index.keys())[:20],
+                    "scoring_system": "semantle_1_to_1000"
                 }
     except Exception as e:
         return {
@@ -1079,7 +1190,8 @@ def debug_files():
             "model_files": model_files_info,
             "model_loaded": model is not None,
             "data_directory_exists": os.path.exists("data"),
-            "data_files": os.listdir("data") if os.path.exists("data") else []
+            "data_files": os.listdir("data") if os.path.exists("data") else [],
+            "scoring_system": "semantle_1_to_1000"
         }
     except Exception as e:
         return {"error": str(e)}
@@ -1098,7 +1210,8 @@ def debug_cache_contents():
                 "word_count": len(value.get("similar_words", [])) if "similar_words" in value else 0,
                 "has_error": "error" in value,
                 "status": value.get("status"),
-                "keys": list(value.keys())
+                "keys": list(value.keys()),
+                "ranking_system": value.get("ranking_system", "unknown")
             }
         else:
             cache_info[key] = {"type": "unknown", "value_type": str(type(value))}
@@ -1106,5 +1219,72 @@ def debug_cache_contents():
     return {
         "cache_entries": cache_info,
         "total_entries": len(daily_words_cache),
-        "error_entries": len([k for k in daily_words_cache.keys() if "_error" in k])
+        "error_entries": len([k for k in daily_words_cache.keys() if "_error" in k]),
+        "scoring_system": "semantle_1_to_1000"
     }
+
+@app.get("/debug/test-ranking")
+def debug_test_ranking():
+    """Debug endpoint to test the ranking system with sample data"""
+    if model is None:
+        load_model()
+    
+    if model is None:
+        return {"error": "Model not loaded", "model_loaded": False}
+    
+    try:
+        # Use a common Hebrew word for testing
+        test_words = ["בית", "אני", "את", "של", "על"]
+        found_word = None
+        
+        for word in test_words:
+            if word in model.wv:
+                found_word = word
+                break
+        
+        if not found_word:
+            return {"error": "No test words found in vocabulary"}
+        
+        # Get top 10 similar words to demonstrate ranking
+        similar_words = model.wv.most_similar(found_word, topn=10)
+        
+        # Create sample ranking data like our system would
+        ranking_demo = []
+        for i, (word, similarity) in enumerate(similar_words):
+            semantle_rank = 999 - i  # 999, 998, 997, etc.
+            ranking_demo.append({
+                "word": word,
+                "similarity": float(similarity),
+                "rank": semantle_rank,
+                "rank_display": f"{semantle_rank}/1000"
+            })
+        
+        # Add the target word (always rank 1000)
+        ranking_demo.insert(0, {
+            "word": found_word,
+            "similarity": 1.0,
+            "rank": 1000,
+            "rank_display": "1000/1000",
+            "note": "This is the daily word (target)"
+        })
+        
+        return {
+            "test_word": found_word,
+            "ranking_system": "semantle_1_to_1000",
+            "explanation": {
+                "daily_word_rank": 1000,
+                "most_similar_rank": 999,
+                "second_most_similar_rank": 998,
+                "least_similar_in_top_999": 1,
+                "not_in_top_999": 0
+            },
+            "sample_rankings": ranking_demo,
+            "model_loaded": True,
+            "vocabulary_size": len(model.wv.key_to_index)
+        }
+        
+    except Exception as e:
+        return {
+            "error": f"Error testing ranking: {str(e)}",
+            "error_type": str(type(e))
+        }
