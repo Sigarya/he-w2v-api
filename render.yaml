@@ -2,39 +2,18 @@
 
 services:
   - type: web
-    name: hebrew-w2v-api
+    name: he-w2v-api # Changed the name slightly to maybe help avoid caching
     runtime: python
     plan: free
     region: oregon
-    buildCommand: |
-      pip install -r requirements.txt
-      echo "--- STARTING MODEL DOWNLOAD (Your Proven Method) ---"
-      
-      # Using your original, working wget commands.
-      echo "Downloading model.mdl..."
-      wget -O model.mdl "https://drive.google.com/uc?export=download&id=1T9tSdIm-8AEz0c6mJuFfLyBL75_lnsTU"
-      
-      echo "Downloading model.mdl.wv.vectors.npy..."
-      wget -O model.mdl.wv.vectors.npy "https://drive.google.com/uc?export=download&id=1z5n9L-2oS_YEh3qf-nkz3ugMM8oqpxGZ"
-      
-      echo "Downloading model.mdl.syn1neg.npy..."
-      wget -O model.mdl.syn1neg.npy "https://drive.google.com/uc?export=download&id=1uhu7bevYhCYZNLPdvupSuw_4X42_-smY"
-      
-      echo "--- MODEL DOWNLOAD COMPLETE ---"
-      echo "Listing files in directory to confirm download:"
-      ls -lh
-      
-      # Create data directory for local backups
-      mkdir -p data
-      
-    startCommand: uvicorn app:app --host 0.0.0.0 --port 10000
+    buildCommand: "./build.sh" # This is the simple, powerful change
+    startCommand: "uvicorn app:app --host 0.0.0.0 --port 10000"
     healthCheckPath: /
     envVars:
       - key: PYTHON_VERSION
-        value: '3.11' # The fix for the gensim compatibility error
+        value: '3.11'
       - key: PYTHONUNBUFFERED
         value: '1'
-      # Your secrets are loaded securely from the Render dashboard
       - key: ADMIN_PASSWORD
         sync: false
       - key: GOOGLE_DRIVE_FOLDER_ID
