@@ -4,28 +4,61 @@ services:
   - type: web
     name: hebrew-w2v-api
     runtime: python
-    plan: free # Note: Free plan may be slow or time out during the large file downloads.
-    region: oregon # Or your preferred region
+    plan: free
+    region: oregon
     buildCommand: |
       pip install --upgrade pip
       pip install -r requirements.txt
-      echo "Build process started. This may take a while due to large model files..."
-      # This next part runs the download function from your app.py at build time.
-      # It's a clever way to ensure the files are ready when the server starts.
-      python -c "from app import download_model_files; download_model_files()"
-      mkdir -p data # Ensure the local backup directory exists
+      echo "--- STARTING MODEL DOWNLOAD SCRIPT ---"
+      
+      # This is your robust download script! It tries multiple methods.
+      download_file() {
+        local file_id=$1
+        local output_name=$2
+        echo "Downloading $output_name (ID: $file_id)..."
+        
+        # Try gdown first
+        echo "Attempting download with gdown..."
+        python -m gdown --id "$file_id" -O "$output_name" --quiet
+        # Check if the file was created and is bigger than a few kilobytes (to avoid error pages)
+        if [ -f "$output_name" ] && [ $(stat -c%s "$output_name") -gt 10000 ]; then
+          echo "✅ Successfully downloaded $output_name with gdown."
+          return 0
+        fi
+        
+        # If gdown fails, try wget (a powerful command-line downloader)
+        echo "gdown failed or file is too small. Trying wget..."
+        wget --no-check-certificate "https://drive.google.com/uc?export=download&id=$file_id" -O "$output_name"
+        if [ -f "$output_name" ] && [ $(stat -c%s "$output_name") -gt 10000 ]; then
+          echo "✅ Successfully downloaded $output_name with wget."
+          return 0
+        fi
+
+        echo "❌ CRITICAL: All download methods failed for $output_name"
+        return 1
+      }
+      
+      # Download all three model files
+      download_file "1T9tSdIm-8AEz0c6mJuFfLyBL75_lnsTU" "model.mdl"
+      download_file "1z5n9L-2oS_YEh3qf-nkz3ugMM8oqpxGZ" "model.mdl.wv.vectors.npy"
+      download_file "1uhu7bevYhCYZNLPdvupSuw_4X42_-smY" "model.mdl.syn1neg.npy"
+
+      echo "--- MODEL DOWNLOAD SCRIPT FINISHED ---"
+      echo "Final directory listing:"
+      ls -lh
+      
+      # Create data directory for local backups
+      mkdir -p data
+
     startCommand: uvicorn app:app --host 0.0.0.0 --port 10000
     healthCheckPath: /
     envVars:
       - key: PYTHON_VERSION
-        value: '3.11'
+        value: '3.11' 
       - key: PYTHONUNBUFFERED
         value: '1'
-      # --- IMPORTANT ---
-      # These are the secret keys. We just list their NAMES here.
-      # We will set the actual VALUES in the Render Dashboard.
       - key: ADMIN_PASSWORD
-        sync: false # 'sync: false' tells Render not to show this value in future YAML syncs
+        sync: false
       - key: GOOGLE_DRIVE_FOLDER_ID
         sync: false
       - key: GOOGLE_SERVICE_ACCOUNT_JSON
