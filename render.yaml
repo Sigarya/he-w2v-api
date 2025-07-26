@@ -5,6 +5,7 @@ services:
     plan: free
     region: oregon
     buildCommand: |
+      pip install setuptools wheel
       pip install -r requirements.txt
       echo "Starting model download process..."
       echo "Build environment info:"
@@ -172,3 +173,9 @@ services:
         value: '3.11'
       - key: PYTHONUNBUFFERED
         value: '1'
+      - key: AIzaSyD0qV86jw1KTYvVxeB-XHOLisaMyOAlmjI
+        sync: false
+      - key: 16U_hIIJ2jXuhJ0wiYmos5J2L-ZDFuZQ-
+        sync: false
+      - key: GOOGLE_SERVICE_ACCOUNT_JSON
+        sync: false
