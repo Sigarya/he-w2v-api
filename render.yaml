@@ -2,12 +2,17 @@
 
 services:
   - type: web
-    name: he-w2v-api # Changed the name slightly to maybe help avoid caching
+    name: hebrew-semantle-api # A new name can help avoid caching issues
     runtime: python
     plan: free
     region: oregon
-    buildCommand: "./build.sh" # This is the simple, powerful change
+    
+    # The build command is as simple as possible. It just installs packages.
+    buildCommand: "pip install -r requirements.txt"
+    
+    # The start command is unchanged.
     startCommand: "uvicorn app:app --host 0.0.0.0 --port 10000"
+    
     healthCheckPath: /
     envVars:
       - key: PYTHON_VERSION
